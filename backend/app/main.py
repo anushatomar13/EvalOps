@@ -1,10 +1,13 @@
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.core.config import settings
 from app.core.db import Base, engine
+from app.core.metrics import HTTP_LATENCY, HTTP_REQUESTS
 import app.models  # noqa: F401  (register models on Base.metadata)
 
 
@@ -32,9 +35,27 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def track_metrics(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    # Use the route template (not the raw path) to keep label cardinality low.
+    route = request.scope.get("route")
+    path = getattr(route, "path", request.url.path)
+    HTTP_LATENCY.labels(request.method, path).observe(time.perf_counter() - start)
+    HTTP_REQUESTS.labels(request.method, path, response.status_code).inc()
+    return response
+
+
 @app.get("/health", tags=["system"])
 def health():
     return {"status": "ok", "service": settings.PROJECT_NAME, "env": settings.ENVIRONMENT}
+
+
+@app.get("/metrics", tags=["system"])
+def metrics():
+    """Prometheus scrape endpoint."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # API routers are registered in app.api.router (added in later steps).

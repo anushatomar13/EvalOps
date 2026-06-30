@@ -5,9 +5,16 @@ per-example EvalResult, then rolls everything up into the run's headline metrics
 Used by both the synchronous path and the Celery worker.
 """
 import hashlib
+import time
 
 from sqlalchemy.orm import Session
 
+from app.core.metrics import (
+    EVAL_RUN_DURATION,
+    EVAL_RUNS,
+    LAST_ACCURACY,
+    LAST_HALLUCINATION_RATE,
+)
 from app.evaluators.metrics import aggregate
 from app.models.dataset import DatasetItem
 from app.models.evaluation import EvalResult, EvalRun
@@ -31,6 +38,7 @@ def run_evaluation(run_id: int, db: Session) -> EvalRun:
 
     run.status = "running"
     db.commit()
+    started = time.perf_counter()
 
     try:
         config = dict(run.config or {})
@@ -107,12 +115,19 @@ def run_evaluation(run_id: int, db: Session) -> EvalRun:
         run.status = "completed"
         db.commit()
         db.refresh(run)
+
+        # Emit observability signals.
+        EVAL_RUNS.labels("completed").inc()
+        EVAL_RUN_DURATION.observe(time.perf_counter() - started)
+        LAST_ACCURACY.labels(str(run.project_id)).set(run.accuracy)
+        LAST_HALLUCINATION_RATE.labels(str(run.project_id)).set(run.hallucination_rate)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         run = db.get(EvalRun, run_id)
         run.status = "failed"
         run.error = str(exc)
         db.commit()
+        EVAL_RUNS.labels("failed").inc()
         raise
 
     return run
