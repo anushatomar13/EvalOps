@@ -31,3 +31,19 @@ def get_current_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin privileges required")
     return user
+
+
+def get_owned_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Fetch a project and ensure the current user owns it (or is admin)."""
+    from app.models.project import Project
+
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Not your project")
+    return project
